@@ -1,0 +1,768 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[13]:
+
+
+import pandas as pd
+
+import math
+from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.techindicators import TechIndicators
+import time
+
+pd.set_option('max_columns', None)
+pd.set_option("max_rows", None)
+
+from collections import defaultdict
+from time import sleep
+from datetime import datetime
+import smtplib, ssl
+import robin_stocks as r 
+
+import warnings
+warnings.filterwarnings("ignore")
+
+from yahoo_fin import stock_info as si
+
+import multiprocessing as mp
+import itertools
+
+from Robinhood.Robinhood import Robinhood
+
+def global_var():
+
+    
+    global buy_dict_price, buy_dict_quantity
+    buy_dict_price = defaultdict(float)
+    buy_dict_quantity = defaultdict(float)
+    
+    global symbol_list
+    symbol_list = ['UPRO','W', 'NCLH', 'SPXU', 'DIS','V','MGM', 'WYND','WH','UPS','FDX','GSX','UBER','BABA','AMC',
+                   'CAT','SNE','BBY','F','GM','XOM','MRO','MPC','UA','JNJ','LLY','WMT','NKE','T','USO','UCO',
+                   'AA', 'TTM', 'H', 'R', 'A', 'CCL','NAT','BXC','FI','SPOT','WORK', 'GME', 'NIO','RLJ','PEI','RWT',
+                   'ACB','M','GEL']
+    
+    # 'HD','VZ','CVS','HON',
+
+    global stock_to_buy
+    stock_to_buy = list()
+    
+    global initial_bank
+    initial_bank = float(pd.read_csv('day_result_live.csv')['end_of_day_balance'][-1:])
+    
+    # global reason_all
+    # reason_all = pd.DataFrame()
+    
+    global reason_output
+    reason_output = pd.DataFrame()
+    
+    global results_all
+    results_all = pd.DataFrame()
+    
+    global total_income
+    total_income = float()
+    
+    global cost_all
+    cost_all = float()
+    
+    global ma_larger_than_price
+    ma_larger_than_price = float()
+    
+    global stock_to_monitor
+    stock_to_monitor = list()
+    
+    global price_hist
+    price_hist = defaultdict(float)
+    
+    global sell_reason
+    sell_reason = pd.DataFrame()
+    
+    global stock_percent
+    stock_percent = defaultdict(float)
+    
+    global ma
+    ma = defaultdict(float)
+    
+    global robinhood_client
+    robinhood_client = Robinhood()
+    robinhood_client.login(username='iluckyyu2@gmail.com', password='China123!!')
+    
+    
+    # global sell_ma_price
+    # sell_ma_price = defaultdict(list)
+    
+    # global sell_ma_price
+    # sell_ma_price = float()
+
+# 'NEW', 'ABG','FCN', 
+
+def get_rsi(symbol):
+    api_key = 'NT9E8714NB9OOC1F'
+
+    ti = TechIndicators(api_key)
+    rsi, meta_rsi = ti.get_rsi(symbol=symbol,interval = '1min',time_period = 14)
+    rsi = pd.DataFrame.from_dict(rsi).melt()
+    rsi.columns = ['time','RSI']
+    rsi = float(rsi.iloc[:1, :]['RSI'])
+   
+    return rsi
+
+
+def get_ma(symbol, period):
+    api_key = 'NT9E8714NB9OOC1F'
+
+    ti = TechIndicators(api_key)
+    ma, meta_ma = ti.get_sma(symbol=symbol,interval = '1min', time_period = period, series_type='close')
+    ma = pd.DataFrame.from_dict(ma).melt()
+    ma.columns = ['time','MA']
+    ma = float(ma.iloc[:1, :]['MA'])
+   
+    return ma
+
+def get_current_data(symbol):
+#     api_key = 'RNZPXZ6Q9FEFMEHM'
+#     api_key = '28QSMJM4Y4QBRIDG'
+    
+    api_key = 'NT9E8714NB9OOC1F'
+
+
+    ts = TimeSeries(key=api_key, output_format='pandas')
+    data, meta_data = ts.get_intraday(symbol=symbol, interval = '1min', outputsize = 'full')
+
+    data['stock'] = symbol
+    
+    #print("Getting data...")
+    
+    return data
+
+def send_alert(receiver_email, stock_str):
+
+    port = 465  # For SSL
+    smtp_server = "smtp.gmail.com"
+    sender_email = "iluckyyu2@gmail.com"  # Enter your address
+#     receiver_email = "iluckyyu2@gmail.com"  # Enter receiver address
+    password = "Us!2012fall"
+    message = """    Subject: Time to make money!
+
+    Time to buy
+    """
+    message = message + stock_str
+    
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message)
+
+
+
+def send_sell_alert(receiver_email, stock_str, net_income):
+
+    port = 465  # For SSL
+    smtp_server = "smtp.gmail.com"
+    sender_email = "iluckyyu2@gmail.com"  # Enter your address
+#     receiver_email = "iluckyyu2@gmail.com"  # Enter receiver address
+    password = ""
+    message = """    Subject: Time to take profit!
+
+    You sold
+    """
+    curr_price = si.get_live_price(stock_str)
+    
+    global stock_percent
+    stock_percent[stock_str] = round((curr_price - buy_dict_price[stock_str])/buy_dict_price[stock_str],4) * 100
+    
+    message = message + stock_str + ' for profit of: $' + ' %s ' + ',' + ' %s '+ 'percent' + ' at' + ' %s ' + 'with' + ' %s ' + 'shares' + ' at ' + ' %s ' 
+    message = message%(round(net_income,2), stock_percent[stock_str], buy_dict_price[stock_str], buy_dict_quantity[stock_str], buy_dict_price[stock_str])
+    
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message)
+        
+
+def sell_monitor():
+    
+    print('\nsell_monitoring starts for:')
+    global initial_bank
+    global buy_dict_price, buy_dict_quantity, stock_to_monitor, cost_all, ma, robinhood_client
+    
+    print(stock_to_monitor)
+    
+    print('\nBought ',cost_all, ' already')
+    
+    curr_time = datetime.now().strftime('%H%M')
+    
+    try:
+        
+        #login = r.login('email','password')
+        # robinhood_client = Robinhood.Robinhood()
+        # robinhood_client.login(username='email', password='password')
+        
+        for stock in stock_to_monitor[:]:
+            global initial_bank, total_income, price_hist, stock_percent, sell_reason
+            
+            email_list = ['luffyisaking@gmail.com','qq490306298@gmail.com','qq364975915@gmail.com']
+            
+            # sell when there is 3% profit
+            sell_price = buy_dict_price[stock] * 1.025
+            curr_price = si.get_live_price(stock)
+            stop_loss  = buy_dict_price[stock] * 0.999
+            
+            profit_stop = 0
+            
+            if stock not in price_hist :
+                price_hist[stock] = curr_price
+
+            if curr_price > price_hist[stock] :
+                price_hist[stock] = curr_price
+            # if the price starts falling, we'd use previous high price as our profit stop price
+            else:
+                profit_stop = price_hist[stock] * 0.99815
+                
+            stop_loss = max(stop_loss, profit_stop)
+            
+            # sell_ma_price    = get_ma(stock, 50) * 1.005
+            
+            bought_quantity = buy_dict_quantity[stock]
+            
+            print('\ncurrent total income is: ', total_income)
+            
+            stock_instrument = robinhood_client.instruments(stock)[0]
+            
+            # global sell_ma_price
+            # sell_ma_price[symbol].append(get_ma(symbol, 50) * 0.999)
+            
+            # ma_for_this_stock = sell_ma_price[stock]
+            
+            
+            
+            # if curr_price >= ma[stock]  :
+                
+            #     r.order_sell_market(stock, bought_quantity, 'gfd')
+                
+            #     print(stock, 'reaches MA')
+            #     print(stock, 'MA is:', ma[stock] , 'Current price is:',curr_price, 'Bought price is:', buy_dict_price[stock])
+                
+            #     # calculate how much we win/lose
+            #     initial_bank = initial_bank  + curr_price * bought_quantity
+            #     net_income = curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity
+            #     total_income = total_income + net_income
+            #     print(stock,' net income is: ', curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity)
+                
+            #     for email in email_list:
+            #         send_sell_alert(email, stock, net_income)
+                    
+                
+            #     stock_percent[stock] = round((curr_price - buy_dict_price[stock])/buy_dict_price[stock],4)
+                
+                
+            #     reason = pd.DataFrame([{'Time': datetime.today(),'Stock': stock, 'Profit Percent': stock_percent[stock]}])
+            #     sell_reason = sell_reason.append(reason)
+                
+            #     print('\ncurrent total income is: ', total_income)
+                
+            #     stock_to_monitor.remove(stock)
+            #     # remove previous recorded highs
+            #     price_hist.pop(stock)
+            
+            if curr_price >= sell_price:
+                
+                #r.order_sell_market(stock, bought_quantity, 'gfd')
+                
+                sell_order = robinhood_client.place_market_sell_order(stock_instrument['url'], stock, 'GFD', bought_quantity)
+                
+                print(stock, 'have enough profit')
+                print(stock, 'sell_price is:', sell_price, 'Current price is:',curr_price,'Bought price is:', buy_dict_price[stock])
+                
+                # calculate how much we win/lose
+                #initial_bank = bank(initial_bank, buy_dict_price[stock] * bought_quantity, curr_price * bought_quantity)
+                initial_bank = initial_bank + curr_price * bought_quantity
+                net_income = curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity
+                total_income = total_income + net_income
+                print(stock,' net income is: ', curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity)
+                
+                for email in email_list:
+                    send_sell_alert(email, stock, net_income)
+                print('\ncurrent total income is: ', total_income)
+                
+                stock_percent[stock] = round((curr_price - buy_dict_price[stock])/buy_dict_price[stock],4)
+                
+                reason = pd.DataFrame([{'Time': datetime.today(),'Stock': stock, 'Profit Percent': stock_percent[stock]}])
+                sell_reason = sell_reason.append(reason)
+                    
+                stock_to_monitor.remove(stock)
+                # remove previous recorded highs
+                price_hist.pop(stock)
+            
+            elif curr_price <= stop_loss:
+                
+                #r.order_sell_market(stock, bought_quantity, 'gfd')
+                
+                sell_order = robinhood_client.place_market_sell_order(stock_instrument['url'], stock, 'GFD', bought_quantity)
+                
+                print(stock, 'hits the stop loss')
+                print(stock, 'stop loss is:', stop_loss, 'Current price is:',curr_price,'Bought price is:', buy_dict_price[stock])
+
+                # calculate how much we win/lose
+                #initial_bank = bank(initial_bank, buy_dict_price[stock] * bought_quantity, curr_price * bought_quantity)
+                initial_bank = initial_bank  + curr_price * bought_quantity
+                net_income = curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity
+                total_income = total_income + net_income
+                print(stock,' net income is: ', curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity)
+                
+                for email in email_list:
+                    send_sell_alert(email, stock, net_income)
+                
+                print('\ncurrent total income is: ', total_income)
+                
+                
+                stock_percent[stock] = round((curr_price - buy_dict_price[stock])/buy_dict_price[stock],4)
+                
+                
+                reason = pd.DataFrame([{'Time': datetime.today(),'Stock': stock, 'Profit Percent': stock_percent[stock]}])
+                sell_reason = sell_reason.append(reason)
+                
+                stock_to_monitor.remove(stock)
+                # remove previous recorded highs
+                price_hist.pop(stock)
+                
+            elif (curr_time == '1558') | (curr_time == '1559'):
+                
+                #r.order_sell_market(stock, bought_quantity, 'gfd')
+                
+                sell_order = robinhood_client.place_market_sell_order(stock_instrument['url'], stock, 'GFD', bought_quantity)
+                
+                print(stock, ' selling as market is closing')
+                
+                initial_bank = initial_bank  + curr_price * bought_quantity
+                net_income = curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity
+                total_income = total_income + net_income
+                print(stock,' net income is: ', curr_price * bought_quantity - buy_dict_price[stock] * bought_quantity)
+                
+                for email in email_list:
+                    send_sell_alert(email, stock, net_income)
+                
+                print('\ncurrent total income is: ', total_income)
+                
+                
+                stock_percent[stock] = round((curr_price - buy_dict_price[stock])/buy_dict_price[stock],4)
+                
+                
+                reason = pd.DataFrame([{'Time': datetime.today(),'Stock': stock, 'Profit Percent': stock_percent[stock]}])
+                sell_reason = sell_reason.append(reason)
+                
+                stock_to_monitor.remove(stock)
+                # remove previous recorded highs
+                price_hist.pop(stock)
+            
+            else:
+                print('\nselling monitoring done, not selling these: ')
+                print(stock_to_monitor)
+                print('\nbalance is: ', initial_bank)
+                pass
+            
+    except Exception as e: 
+        print(e,'error at sell_monitor()')
+
+def process(symbol):
+    
+    try:
+        
+        curr_data = get_current_data(symbol)
+        today_date = datetime.today().strftime('%Y-%m-%d')
+        # only get today's data
+        curr_data = curr_data.reset_index()
+        #print('error0')
+        curr_data['time'] = curr_data['date'].dt.strftime('%H-%M-%S')
+        curr_data['date'] = curr_data['date'].dt.strftime('%Y-%m-%d')
+        curr_data = curr_data[curr_data.date == today_date]
+        
+        #get the global minimum price
+        global_min = curr_data['3. low'].min()
+        print(global_min)
+        #print("error1")
+        # skip over the past 0.5 hour data
+        prev_data = curr_data.shift(-30).dropna()
+        #print("error2")
+        # see how long it has passed
+        prev_data_len = len(prev_data)
+        print(symbol, prev_data_len)
+        #print('error3')
+        # get the local minimum in the last 2 hour
+        local_min = curr_data['3. low'][:50].min()
+        #print('error4')
+        # get current price
+        curr_price = si.get_live_price(symbol)
+        
+        # global ma_larger_than_price
+        # if sell_ma_price > curr_price:
+        #     ma_larger_than_price = ma_larger_than_price + 1
+
+        # only look at stock that has been trading for more than 2 hours
+        #print("analyzing...at: ", datetime.today())
+        
+        first_row_curr_data = curr_data.iloc[:1, :]
+        
+        rsi = get_rsi(symbol)
+        
+        print(symbol, ' RSI is: ',rsi)
+        
+        buy_price_upper_bound  = global_min * 1.001
+        buy_price_lower_bound  = global_min * 1.000
+
+        
+        if rsi <= 22 :
+            
+            first_row_curr_data['rsi'] = get_rsi(symbol)
+            # if RSI is below 30, we alert 
+            first_row_curr_data.loc[first_row_curr_data.rsi <= 22, 'alert']  = 1
+            first_row_curr_data = first_row_curr_data.fillna(0)
+            first_row_curr_data.loc[first_row_curr_data.rsi <= 22, 'reason']  = 'rsi'
+            first_row_curr_data = first_row_curr_data.fillna('not_selected')
+            
+            return first_row_curr_data
+        
+        
+        if ((prev_data_len >= 30) & (local_min > global_min)) & (float(first_row_curr_data['3. low']) >= buy_price_lower_bound) & (float(first_row_curr_data['3. low']) <= buy_price_upper_bound):
+
+#                 prev_data_max = prev_data['4. close'].max()
+#                 prev_data_std = prev_data['4. close'].std()
+#                 prev_data_mean = prev_data['4. close'].mean()
+            
+#                 change_pct = prev_data_std / prev_data_mean
+            
+            
+            
+            # buy_price_upper_bound_local  = local_min * 1.005
+            # buy_price_lower_bound_local  = local_min * 1.002
+            
+
+            curr_data['global_min'] = global_min
+            # only get the most recent price
+            
+            # if a new minimum came out in the last half hour, we dont use the prev minimum anymore
+            # if (global_min <= curr_data_min):
+            # what if it's already above MA
+            
+            # first_row_curr_data['local_min'] = local_min
+            # first_row_curr_data.loc[(first_row_curr_data['3. low'] >= buy_price_lower_bound_local) & (first_row_curr_data['3. low'] <= buy_price_upper_bound_local), 'alert'] = 1
+            # first_row_curr_data = first_row_curr_data.fillna(0)
+            # first_row_curr_data.loc[(first_row_curr_data['3. low'] >= buy_price_lower_bound_local) & (first_row_curr_data['3. low'] <= buy_price_upper_bound_local), 'reason'] = 'double_bottom_local_minimum'
+            # first_row_curr_data = first_row_curr_data.fillna('not_selected')
+            
+            first_row_curr_data.loc[(first_row_curr_data['3. low'] >= buy_price_lower_bound) & (first_row_curr_data['3. low'] <= buy_price_upper_bound), 'alert'] = 1
+            first_row_curr_data = first_row_curr_data.fillna(0)
+            first_row_curr_data.loc[(first_row_curr_data['3. low'] >= buy_price_lower_bound) & (first_row_curr_data['3. low'] <= buy_price_upper_bound), 'reason'] = 'double_bottom_global_minimum'
+            first_row_curr_data = first_row_curr_data.fillna('not_selected')
+            
+            return first_row_curr_data
+            
+            #print("analyzing is done...")
+            
+        
+        
+
+        else: 
+            print(symbol,"Not enough data at/there is a new minimum recently:", datetime.today())
+            results = pd.DataFrame([{'date': datetime.today(),'time': datetime.today(),'stock':symbol,'alert':0,'reason': 'not_selected'}])
+            
+            return results
+
+        
+        
+    except Exception as e: 
+        print(e,'error at process')
+        print(symbol, "can't be read")
+        
+        results = pd.DataFrame([{'date': datetime.today(),'time':datetime.today(),'stock':symbol,'alert':0, 'reason': 'not_selected'}])
+            
+        return results
+
+
+def analyze_result():
+    
+    global buy_dict_price, initial_bank, results_all, symbol_list, stock_to_buy
+    start = time.time()
+                
+    input = zip(symbol_list)
+                
+    ctx = mp.get_context('spawn')
+    p = ctx.Pool()
+    print("\nMultiprocessing starts:")
+    
+    results = p.starmap(process, input)
+    p.close()
+    p.join()
+    print("\nMultiprocessing ends")
+    
+    results_all = pd.concat(results)
+    
+    end = time.time()
+    print("One scan duration: ", end - start)
+        
+    alert = results_all[results_all['alert'] == 1]
+    stock_to_buy = alert['stock'].tolist()
+    stock_to_buy_len = len(stock_to_buy)
+
+    reason = results_all[results_all['reason'] != 'not_selected']
+    reason_all = reason[['date','time','stock','reason']]
+#    reason_all = reason_all.append(reason)
+
+    
+    print(reason_all)
+    
+    if alert.empty:
+        print('\nNo stocks to buy')
+        pass
+    else:
+        try:
+            print('\nThese stocks meet criteria')
+            print(stock_to_buy, stock_to_buy_len)
+
+            global initial_bank
+            global stock_to_monitor, cost_all, reason_output, robinhood_client
+            
+            print("starting balance is: ", initial_bank)
+            
+            money_per_stock = initial_bank / stock_to_buy_len 
+            
+            
+            
+            for symbol in stock_to_buy[:]:
+                # add a if to say if it's already in stock_to_buy, we dont buy it
+                
+                if (symbol in stock_to_monitor[:]) & (stock_to_buy_len > 1):
+                    stock_to_buy_len = stock_to_buy_len - 1
+                    money_per_stock = initial_bank / stock_to_buy_len
+                    print("Skipping this stock to buy as it's already bought")
+                    continue
+                
+                elif (symbol in stock_to_monitor[:]) & (stock_to_buy_len == 1):
+                    print("Skipping this stock and not adjusting the money per stock")
+                    continue
+
+                global ma
+                ma[symbol] = get_ma(symbol, 50) * 0.999
+        
+                
+                # get live/current price
+                price = si.get_live_price(symbol)
+                price = round(price, 2)
+                
+                distance_from_ma = abs((ma[symbol] - price)/price)
+                print('\ndistance from MA is: ',distance_from_ma)
+                
+                if distance_from_ma < 0.005 :
+                    print("Not buying ", symbol, " as price is too close to MA")
+                    if stock_to_buy_len > 1:
+                        stock_to_buy_len = stock_to_buy_len - 1
+                        money_per_stock = initial_bank / stock_to_buy_len
+                    
+                    continue
+
+                # calculate how many shares we can buy
+                
+                # if it's the second time buying, no need to divide by len
+                
+                quantity = money_per_stock / price
+                quantity = math.floor(quantity)
+                print("\nprice/quantity for:", symbol, 'is:', price, '/', quantity)
+                
+                # if we have cash to buy the stock
+                if quantity != 0:
+                
+                    #r.order_buy_market(symbol, quantity, 'gfd')
+                    
+                    stock_instrument = robinhood_client.instruments(symbol)[0]
+                    buy_order = robinhood_client.place_market_buy_order(stock_instrument['url'], symbol, 'GFD', quantity)
+                    
+                    
+                    # record the quantity and price for the stock bought
+                    buy_dict_price[symbol] = price
+                    buy_dict_quantity[symbol] = quantity
+                    
+                    cost = buy_dict_price[symbol] * buy_dict_quantity[symbol]
+                    
+                    initial_bank = initial_bank - cost + 0
+                    print("new balance is: ", initial_bank)
+                    
+                    reason_single = reason_all[reason_all['stock'] == symbol]
+                    reason_output = reason_output.append(reason_single)
+                    
+                    cost_all = cost + cost_all
+    
+                    email_list = ['luffyisaking@gmail.com','qq490306298@gmail.com','qq364975915@gmail.com']
+            
+                    # for email in email_list:
+                    #     send_alert(email, symbol)
+                        
+                    stock_to_buy.remove(symbol)
+                    
+                    # add stock to another list once we bought it
+                    stock_to_monitor.append(symbol)
+                
+                #print("alert sent for: ", symbol)
+            
+        except Exception as e: 
+                print(e,'error at analyze_result()')
+                pass
+
+
+# # Execute the alert function
+
+
+def run():
+
+    global_var()
+
+    
+    global symbol_list
+    global reason_all, sell_reason
+    
+    try:
+    
+        while (int(datetime.today().strftime('%H')) < 16 ):
+            second = int(datetime.today().strftime('%S'))
+            
+            if ((second >= 0) & (second <= 3)):
+                try:
+                    analyze_result()
+    
+                    sell_monitor()
+                    
+    
+                except Exception as e: 
+                    print(e,'error at Run')
+                    pass
+      
+                except KeyboardInterrupt:
+                    print('Keyboard Interrupt')
+                    #today_date = datetime.today().strftime('%m/%d/%Y')
+                    day_result = pd.DataFrame([{'Date': datetime.today(),'end_of_day_balance': initial_bank}])
+                    day_result_history = pd.read_csv('day_result_live.csv')
+                    day_result_history = day_result_history.append(day_result)
+                    day_result_history.to_csv('day_result_live.csv', index = False)
+            
+                    day_reason_history = pd.read_csv('day_reason.csv')
+                    day_reason_history = day_reason_history.append(reason_output)
+                    day_reason_history.to_csv('day_reason.csv', index = False)
+                    
+                    sell_reason_old = pd.read_csv('sell_reason.csv')
+                    sell_reason_all = sell_reason_old.append(sell_reason)
+                    sell_reason_all.to_csv('sell_reason.csv', index = False)
+    
+                except Exception as e: 
+                    print(e)
+            
+                    #today_date = datetime.today().strftime('%m/%d/%Y')
+                    
+                    day_result = pd.DataFrame([{'Date': datetime.today(),'end_of_day_balance': initial_bank}])
+                    
+                    day_result_history = pd.read_csv('day_result_live.csv')
+                    day_result_history = day_result_history.append(day_result)
+                    day_result_history.to_csv('day_result_live.csv', index = False)
+                    
+                    day_reason_history = pd.read_csv('day_reason.csv')
+                    day_reason_history = day_reason_history.append(reason_output)
+                    day_reason_history.to_csv('day_reason.csv', index = False)
+                    
+                    sell_reason_old = pd.read_csv('sell_reason.csv')
+                    sell_reason_all = sell_reason_old.append(sell_reason)
+                    sell_reason_all.to_csv('sell_reason.csv', index = False)
+                
+            else:
+                pass
+            
+        day_result = pd.DataFrame([{'Date': datetime.today(),'end_of_day_balance': initial_bank}])
+                    
+        day_result_history = pd.read_csv('day_result_live.csv')
+        day_result_history = day_result_history.append(day_result)
+        day_result_history.to_csv('day_result_live.csv', index = False)
+        
+        day_reason_history = pd.read_csv('day_reason.csv')
+        day_reason_history = day_reason_history.append(reason_output)
+        day_reason_history.to_csv('day_reason.csv', index = False)
+        
+        sell_reason_old = pd.read_csv('sell_reason.csv')
+        sell_reason_all = sell_reason_old.append(sell_reason)
+        sell_reason_all.to_csv('sell_reason.csv', index = False)
+            
+    except KeyboardInterrupt:
+                print('Keyboard Interrupt')
+                #today_date = datetime.today().strftime('%m/%d/%Y')
+                day_result = pd.DataFrame([{'Date': datetime.today(),'end_of_day_balance': initial_bank}])
+                day_result_history = pd.read_csv('day_result_live.csv')
+                day_result_history = day_result_history.append(day_result)
+                day_result_history.to_csv('day_result_live.csv', index = False)
+        
+                day_reason_history = pd.read_csv('day_reason.csv')
+                day_reason_history = day_reason_history.append(reason_output)
+                day_reason_history.to_csv('day_reason.csv', index = False)
+                
+                sell_reason_old = pd.read_csv('sell_reason.csv')
+                sell_reason_all = sell_reason_old.append(sell_reason)
+                sell_reason_all.to_csv('sell_reason.csv', index = False)
+    
+            
+if __name__ == '__main__':
+    start = time.time()
+    run()
+    end = time.time()
+    print("Duration: ", end - start)
+
+# # Trading!
+
+# login = r.login('email','password')
+
+# global buy_dict_price, buy_dict_quantity
+# buy_dict_price = defaultdict(list)
+# buy_dict_quantity = defaultdict(list)
+
+# def buy(cash = 5000):
+    
+#     for stock in stock_to_buy:
+#         # get current price and calculate how many shares you can buy based on your desired total amount
+        
+#         # get live/current price
+#         price = si.get_live_price(stock)
+#         quantity = cash/len(stock_to_buy)/price
+        
+#         # record the quantity and price for the stock bought
+#         buy_dict_price[stock] = price
+#         buy_dict_quantity[stock] = quantity
+        
+#         r.order_buy_market(stock, quantity)
+
+# def sell():
+#     for stock in stock_to_buy:
+#         # sell when there is 3% profit
+#         sell_price = buy_dict_price[stock] * 1.03
+#         current_price = si.get_live_price(stock)
+#         stop_loss  = buy_dict_price[stock] * 0.95
+        
+#         bought_quantity = buy_dict_quantity[stock]
+
+#         if current_price >= sell_price:
+#             r.order_sell_market(stock, bought_quantity)
+            
+#         if current_price <= stop_loss:
+#             r.order_sell_market(stock, bought_quantity)
+            
+#         else:
+#             continue
+
+
+# global stock_to_buy
+# stock_to_buy = 'placeholder'
+
+# # keep excuting until trading day (containing 390 minutes) is over 
+# times = 0
+# while times <= 390:
+#     sleep(60)
+#     stock_to_buy = analyze_result()
+#     times +=  1
+    
+#     buy()
+    
+#     sell()
